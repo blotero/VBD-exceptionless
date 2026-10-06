@@ -1,0 +1,153 @@
+<script module lang="ts">
+    import { ChangeType, type WebSocketMessageValue } from '$features/websockets/models';
+
+    export function recordConfiguredProjectId(
+        message: WebSocketMessageValue<'PersistentEventChanged'>,
+        organizationId: string | undefined,
+        configuredProjectIds: Set<string>
+    ): boolean {
+        if (
+            message.change_type === ChangeType.Removed ||
+            message.organization_id !== organizationId ||
+            !message.project_id ||
+            configuredProjectIds.has(message.project_id)
+        ) {
+            return false;
+        }
+
+        configuredProjectIds.add(message.project_id);
+        return true;
+    }
+</script>
+
+<script lang="ts">
+    import type { NotificationProps } from '$comp/notification';
+
+    import { getOrganizationQuery, getOrganizationsQuery } from '$features/organizations/api.svelte';
+    import { organization as currentOrganizationId } from '$features/organizations/context.svelte';
+    import { SuspensionCode } from '$features/organizations/models';
+    import { getOrganizationProjectsQuery } from '$features/projects/api.svelte';
+    import { getMeQuery } from '$features/users/api.svelte';
+    import { useEventListener } from 'runed';
+    import { SvelteSet } from 'svelte/reactivity';
+
+    import FreePlanNotification from './notifications/free-plan-notification.svelte';
+    import HourlyOverageNotification from './notifications/hourly-overage-notification.svelte';
+    import ImpersonationNotification from './notifications/impersonation-notification.svelte';
+    import MonthlyOverageNotification from './notifications/monthly-overage-notification.svelte';
+    import PremiumUpgradeNotification from './notifications/premium-upgrade-notification.svelte';
+    import ProjectConfigurationNotification from './notifications/project-configuration-notification.svelte';
+    import RequestLimitNotification from './notifications/request-limit-notification.svelte';
+    import SetupFirstProjectNotification from './notifications/setup-first-project-notification.svelte';
+    import SuspendedOrganizationNotification from './notifications/suspended-organization-notification.svelte';
+
+    interface Props extends NotificationProps {
+        ignoreConfigureProjects?: boolean;
+        ignoreFree?: boolean;
+        isChatEnabled: boolean;
+        openChat: () => void;
+        premiumFeatureName?: string;
+        requiresPremium?: boolean;
+    }
+
+    let {
+        ignoreConfigureProjects = false,
+        ignoreFree = false,
+        isChatEnabled,
+        openChat,
+        premiumFeatureName,
+        requiresPremium = false,
+        ...restProps
+    }: Props = $props();
+
+    const meQuery = getMeQuery();
+    const isGlobalAdmin = $derived(!!meQuery.data?.roles?.includes('global'));
+
+    const userOrganizationIds = $derived(meQuery.data?.organization_ids ?? []);
+    const isImpersonating = $derived(
+        isGlobalAdmin && currentOrganizationId.current !== undefined && !userOrganizationIds.includes(currentOrganizationId.current)
+    );
+
+    const organizationsQuery = getOrganizationsQuery({});
+    const userOrganizations = $derived((organizationsQuery.data?.data ?? []).filter((org) => userOrganizationIds.includes(org.id!)));
+
+    const organizationQuery = getOrganizationQuery({
+        route: {
+            get id() {
+                return currentOrganizationId.current;
+            }
+        }
+    });
+
+    const projectsQuery = getOrganizationProjectsQuery({
+        route: {
+            get organizationId() {
+                return currentOrganizationId.current;
+            }
+        }
+    });
+
+    const organization = $derived(organizationQuery.data);
+    const projects = $derived((projectsQuery.data?.data ?? []).filter((p) => p.organization_id === currentOrganizationId.current));
+    let configuredProjectIds = new SvelteSet<string>();
+    const projectsNeedingConfig = $derived(projects.filter((p) => p.is_configured === false && !configuredProjectIds.has(p.id!)));
+
+    const suspensionCode: SuspensionCode | undefined = $derived(
+        organization?.suspension_code === 'Billing'
+            ? SuspensionCode.Billing
+            : organization?.suspension_code === 'Overage'
+              ? SuspensionCode.Overage
+              : organization?.suspension_code === 'Abuse'
+                ? SuspensionCode.Abuse
+                : organization?.suspension_code === 'Other'
+                  ? SuspensionCode.Other
+                  : undefined
+    );
+
+    const isSuspended = $derived(!!organization?.is_suspended);
+    const isMonthlyOverage = $derived(!!organization?.is_over_monthly_limit);
+    const isHourlyOverage = $derived(!!organization?.is_throttled);
+    const isExceededRequestLimit = $derived(!!organization?.is_over_request_limit);
+    const isFreePlan = $derived(!ignoreFree && /free/i.test(organization?.plan_name ?? ''));
+    const hasNoProjects = $derived(projectsQuery.isSuccess && projects.length === 0);
+    const needsProjectConfiguration = $derived(
+        projectsQuery.isSuccess && !ignoreConfigureProjects && projects.length > 0 && projectsNeedingConfig.length === projects.length
+    );
+    const requiresPremiumUpgrade = $derived(requiresPremium && !organization?.has_premium_features && !needsProjectConfiguration);
+
+    useEventListener(document, 'PersistentEventChanged', (event) => {
+        const message = (event as CustomEvent<WebSocketMessageValue<'PersistentEventChanged'>>).detail;
+        recordConfiguredProjectId(message, currentOrganizationId.current, configuredProjectIds);
+    });
+</script>
+
+{#if isImpersonating && organization}
+    <ImpersonationNotification name={organization.name} {userOrganizations} {...restProps} />
+{/if}
+
+{#if organization}
+    {#if isSuspended}
+        <SuspendedOrganizationNotification
+            name={organization.name}
+            {suspensionCode}
+            {isChatEnabled}
+            {openChat}
+            organizationId={organization.id}
+            {...restProps}
+        />
+    {:else if isMonthlyOverage}
+        <MonthlyOverageNotification name={organization.name} organizationId={organization.id} {...restProps} />
+    {:else if isHourlyOverage}
+        <HourlyOverageNotification name={organization.name} organizationId={organization.id} {...restProps} />
+    {:else if isExceededRequestLimit}
+        <RequestLimitNotification name={organization.name} {isChatEnabled} {openChat} {...restProps} />
+    {:else if needsProjectConfiguration}
+        <ProjectConfigurationNotification projects={projectsNeedingConfig} {...restProps} />
+    {:else if requiresPremiumUpgrade}
+        <PremiumUpgradeNotification name={organization.name} organizationId={organization.id} {premiumFeatureName} {...restProps} />
+    {:else if isFreePlan}
+        <FreePlanNotification name={organization.name} organizationId={organization.id} {...restProps} />
+    {:else if hasNoProjects}
+        <SetupFirstProjectNotification {...restProps} />
+    {/if}
+{/if}

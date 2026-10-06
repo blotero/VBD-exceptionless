@@ -1,0 +1,162 @@
+using Exceptionless.Core.Billing;
+using Exceptionless.Core.Extensions;
+using Exceptionless.Core.Models;
+using Exceptionless.Core.Models.Billing;
+using Exceptionless.Core.Repositories.Configuration;
+using Exceptionless.Core.Repositories.Queries;
+using Exceptionless.Core.Validation;
+using Foundatio.Repositories;
+using Foundatio.Repositories.Models;
+
+namespace Exceptionless.Core.Repositories;
+
+public class OrganizationRepository : RepositoryBase<Organization>, IOrganizationRepository
+{
+    private readonly BillingPlans _plans;
+    private readonly TimeProvider _timeProvider;
+
+    public OrganizationRepository(ExceptionlessElasticConfiguration configuration, MiniValidationValidator validator, BillingPlans plans, AppOptions options)
+        : base(configuration.Organizations, validator, options)
+    {
+        _plans = plans;
+        _timeProvider = configuration.TimeProvider;
+        DocumentsChanging.AddSyncHandler(OnDocumentsChanging);
+    }
+
+    private void OnDocumentsChanging(object sender, DocumentsChangeEventArgs<Organization> args)
+    {
+        foreach (var organization in args.Documents)
+            organization.Value.TrimUsage(_timeProvider);
+    }
+
+    public async Task<Organization?> GetByInviteTokenAsync(string token)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(token);
+
+        var hit = await FindOneAsync(q => q.FieldEquals(o => o.Invites.First().Token, token));
+        return hit?.Document;
+    }
+
+    public async Task<Organization?> GetByStripeCustomerIdAsync(string customerId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(customerId);
+
+        var hit = await FindOneAsync(q => q.FieldEquals(o => o.StripeCustomerId, customerId));
+        return hit?.Document;
+    }
+
+    public Task<FindResults<Organization>> GetByFilterAsync(AppFilter systemFilter, string? userFilter, string? sort, CommandOptionsDescriptor<Organization>? options = null)
+    {
+        IRepositoryQuery<Organization> query = new RepositoryQuery<Organization>()
+            .AppFilter(systemFilter)
+            .FilterExpression(userFilter);
+
+        query = !String.IsNullOrEmpty(sort) ? query.SortExpression(sort) : query.SortAscending(o => o.Name);
+        return FindAsync(q => query, options);
+    }
+
+    public Task<FindResults<Organization>> GetByCriteriaAsync(string? criteria, CommandOptionsDescriptor<Organization> options, OrganizationSortBy sortBy, bool? paid = null, bool? suspended = null)
+    {
+        var query = new RepositoryQuery<Organization>();
+
+        if (!String.IsNullOrWhiteSpace(criteria))
+        {
+            string normalizedCriteria = criteria.Trim();
+            query.FieldOr(g => g
+                .FieldEquals(o => o.Id, normalizedCriteria)
+                .FieldEquals(o => o.Name, normalizedCriteria)
+                .FieldContains(o => o.Name, normalizedCriteria));
+        }
+
+        if (paid.HasValue)
+        {
+            if (paid.Value)
+                query.FieldNotEquals(o => o.PlanId, _plans.FreePlan.Id);
+            else
+                query.FieldEquals(o => o.PlanId, _plans.FreePlan.Id);
+        }
+
+        if (suspended.HasValue)
+        {
+            if (suspended.Value)
+                query.FieldOr(g => g
+                    .FieldNot(n => n
+                        .FieldOr(o => o
+                            .FieldEquals(o => o.BillingStatus, (int)BillingStatus.Active)
+                            .FieldEquals(o => o.BillingStatus, (int)BillingStatus.Trialing)
+                            .FieldEquals(o => o.BillingStatus, (int)BillingStatus.Canceled)))
+                    .FieldEquals(o => o.IsSuspended, true));
+            else
+                query.FieldAnd(g => g
+                    .FieldOr(o => o
+                        .FieldEquals(o => o.BillingStatus, (int)BillingStatus.Active)
+                        .FieldEquals(o => o.BillingStatus, (int)BillingStatus.Trialing)
+                        .FieldEquals(o => o.BillingStatus, (int)BillingStatus.Canceled))
+                    .FieldEquals(o => o.IsSuspended, false));
+        }
+
+        switch (sortBy)
+        {
+            case OrganizationSortBy.Newest:
+                query.SortDescending((Organization o) => o.Id);
+                break;
+            case OrganizationSortBy.Subscribed:
+                query.SortDescending((Organization o) => o.SubscribeDate);
+                break;
+            // case OrganizationSortBy.MostActive:
+            //    query.WithSortDescending((Organization o) => o.TotalEventCount);
+            //    break;
+            default:
+                query.SortAscending((Organization o) => o.Name);
+                break;
+        }
+
+        return FindAsync(q => query, options);
+    }
+
+    public async Task<BillingPlanStats> GetBillingPlanStatsAsync()
+    {
+        var results = (await FindAsync(q => q
+            .Include(o => o.PlanId, o => o.IsSuspended, o => o.BillingPrice, o => o.BillingStatus)
+            .SortDescending(o => o.PlanId))).Documents;
+        var smallOrganizations = results.Where(o => String.Equals(o.PlanId, _plans.SmallPlan.Id) && o.BillingPrice > 0).ToList();
+        var mediumOrganizations = results.Where(o => String.Equals(o.PlanId, _plans.MediumPlan.Id) && o.BillingPrice > 0).ToList();
+        var largeOrganizations = results.Where(o => String.Equals(o.PlanId, _plans.LargePlan.Id) && o.BillingPrice > 0).ToList();
+        decimal monthlyTotalPaid = smallOrganizations.Where(o => !o.IsSuspended && o.BillingStatus == BillingStatus.Active).Sum(o => o.BillingPrice)
+            + mediumOrganizations.Where(o => !o.IsSuspended && o.BillingStatus == BillingStatus.Active).Sum(o => o.BillingPrice)
+            + largeOrganizations.Where(o => !o.IsSuspended && o.BillingStatus == BillingStatus.Active).Sum(o => o.BillingPrice);
+
+        var smallYearlyOrganizations = results.Where(o => String.Equals(o.PlanId, _plans.SmallYearlyPlan.Id) && o.BillingPrice > 0).ToList();
+        var mediumYearlyOrganizations = results.Where(o => String.Equals(o.PlanId, _plans.MediumYearlyPlan.Id) && o.BillingPrice > 0).ToList();
+        var largeYearlyOrganizations = results.Where(o => String.Equals(o.PlanId, _plans.LargeYearlyPlan.Id) && o.BillingPrice > 0).ToList();
+        decimal yearlyTotalPaid = smallYearlyOrganizations.Where(o => !o.IsSuspended && o.BillingStatus == BillingStatus.Active).Sum(o => o.BillingPrice)
+            + mediumYearlyOrganizations.Where(o => !o.IsSuspended && o.BillingStatus == BillingStatus.Active).Sum(o => o.BillingPrice)
+            + largeYearlyOrganizations.Where(o => !o.IsSuspended && o.BillingStatus == BillingStatus.Active).Sum(o => o.BillingPrice);
+
+        return new BillingPlanStats
+        {
+            SmallTotal = smallOrganizations.Count,
+            SmallYearlyTotal = smallYearlyOrganizations.Count,
+            MediumTotal = mediumOrganizations.Count,
+            MediumYearlyTotal = mediumYearlyOrganizations.Count,
+            LargeTotal = largeOrganizations.Count,
+            LargeYearlyTotal = largeYearlyOrganizations.Count,
+            MonthlyTotal = monthlyTotalPaid + (yearlyTotalPaid / 12),
+            YearlyTotal = (monthlyTotalPaid * 12) + yearlyTotalPaid,
+            MonthlyTotalAccounts = smallOrganizations.Count + mediumOrganizations.Count + largeOrganizations.Count,
+            YearlyTotalAccounts = smallYearlyOrganizations.Count + mediumYearlyOrganizations.Count + largeYearlyOrganizations.Count,
+            FreeAccounts = results.Count(o => String.Equals(o.PlanId, _plans.FreePlan.Id)),
+            PaidAccounts = results.Count(o => !String.Equals(o.PlanId, _plans.FreePlan.Id) && o.BillingPrice > 0),
+            FreeloaderAccounts = results.Count(o => !String.Equals(o.PlanId, _plans.FreePlan.Id) && o.BillingPrice <= 0),
+            SuspendedAccounts = results.Count(o => o.IsSuspended),
+        };
+    }
+}
+
+public enum OrganizationSortBy
+{
+    Newest = 0,
+    Subscribed = 1,
+    MostActive = 2,
+    Alphabetical = 3,
+}

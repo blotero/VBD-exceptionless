@@ -1,0 +1,22 @@
+---
+ConnectionStrings:
+#  Redis: localhost,abortConnect=false
+#  Elasticsearch: server=https://elastic:elastic@localhost:9200
+#  Cache: provider=redis;
+#  MessageBus: provider=redis;
+#  Queue: provider=redis;
+#  Storage: provider=folder;path=..\Exceptionless.Web\storage
+  Email: smtp://localhost:1025
+
+# Base url for the ui used to build links in emails and other places.
+BaseURL: https://web-ex.dev.localhost:7131
+
+Serilog:
+  MinimumLevel:
+    Default: Information
+
+Apm:
+  EnableLogs: false
+  FullDetails: true
+  Debug: false
+  Console: false

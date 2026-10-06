@@ -1,0 +1,151 @@
+using Elastic.Clients.Elasticsearch;
+using Elastic.Clients.Elasticsearch.Serialization;
+using Elastic.Transport;
+using Exceptionless.Core.Configuration;
+using Exceptionless.Core.Extensions;
+using Exceptionless.Core.Repositories.Queries;
+using Exceptionless.Core.Serialization;
+using Foundatio.Caching;
+using Foundatio.Extensions.Hosting.Startup;
+using Foundatio.Jobs;
+using Foundatio.Messaging;
+using Foundatio.Queues;
+using Foundatio.Repositories.Elasticsearch;
+using Foundatio.Repositories.Elasticsearch.Configuration;
+using Foundatio.Repositories.Elasticsearch.Queries.Builders;
+using Foundatio.Repositories.Serialization;
+using Foundatio.Resilience;
+using Foundatio.Serializer;
+using Microsoft.Extensions.Logging;
+
+namespace Exceptionless.Core.Repositories.Configuration;
+
+public sealed class ExceptionlessElasticConfiguration : ElasticConfiguration, IStartupAction
+{
+    private readonly AppOptions _appOptions;
+
+    public ExceptionlessElasticConfiguration(
+        AppOptions appOptions,
+        IQueue<WorkItemData> workItemQueue,
+        ICacheClient cacheClient,
+        IMessageBus messageBus,
+        IServiceProvider serviceProvider,
+        ITextSerializer serializer,
+        TimeProvider timeProvider,
+        IResiliencePolicyProvider resiliencePolicyProvider,
+        ILoggerFactory loggerFactory
+    ) : base(workItemQueue, cacheClient, messageBus, serializer, timeProvider, resiliencePolicyProvider, loggerFactory)
+    {
+        _appOptions = appOptions;
+
+        _logger.LogInformation("All new indexes will be created with {ElasticsearchNumberOfShards} Shards and {ElasticsearchNumberOfReplicas} Replicas", _appOptions.ElasticsearchOptions.NumberOfShards, _appOptions.ElasticsearchOptions.NumberOfReplicas);
+        AddIndex(Stacks = new StackIndex(this));
+        AddIndex(Events = new EventIndex(this, serviceProvider, appOptions));
+        AddIndex(Migrations = new MigrationIndex(this, _appOptions.ElasticsearchOptions.ScopePrefix + "migrations", appOptions.ElasticsearchOptions.NumberOfReplicas));
+        AddIndex(Organizations = new OrganizationIndex(this));
+        AddIndex(OAuthApplications = new OAuthApplicationIndex(this));
+        AddIndex(OAuthTokens = new OAuthTokenIndex(this));
+        AddIndex(Projects = new ProjectIndex(this));
+        AddIndex(SavedViews = new SavedViewIndex(this));
+        AddIndex(SystemSettings = new SystemSettingsIndex(this));
+        AddIndex(Tokens = new TokenIndex(this));
+        AddIndex(Users = new UserIndex(this));
+        AddIndex(WebHooks = new WebHookIndex(this));
+    }
+
+    public Task RunAsync(CancellationToken shutdownToken = default)
+    {
+        if (_appOptions.ElasticsearchOptions.DisableIndexConfiguration)
+            return Task.CompletedTask;
+
+        return ConfigureIndexesAsync();
+    }
+
+    public override void ConfigureGlobalQueryBuilders(ElasticQueryBuilder builder)
+    {
+        builder.Register(new AppFilterQueryBuilder(_appOptions, TimeProvider));
+        builder.Register(new OrganizationQueryBuilder());
+        builder.Register(new ProjectQueryBuilder());
+        builder.Register(new StackQueryBuilder());
+    }
+
+    public ElasticsearchOptions Options => _appOptions.ElasticsearchOptions;
+    public StackIndex Stacks { get; }
+    public EventIndex Events { get; }
+    public MigrationIndex Migrations { get; }
+    public OrganizationIndex Organizations { get; }
+    public OAuthApplicationIndex OAuthApplications { get; }
+    public OAuthTokenIndex OAuthTokens { get; }
+    public ProjectIndex Projects { get; }
+    public SavedViewIndex SavedViews { get; }
+    public SystemSettingsIndex SystemSettings { get; }
+    public TokenIndex Tokens { get; }
+    public UserIndex Users { get; }
+    public WebHookIndex WebHooks { get; }
+
+    protected override ElasticsearchClient CreateElasticClient()
+    {
+        var connectionPool = CreateConnectionPool();
+        return new ElasticsearchClient(CreateElasticsearchClientSettings(connectionPool));
+    }
+
+    private ElasticsearchClientSettings CreateElasticsearchClientSettings(NodePool connectionPool)
+    {
+        return ConfigureElasticsearchClientSettings(new ElasticsearchClientSettings(
+            connectionPool,
+            sourceSerializer: (_, clientSettings) =>
+                new DefaultSourceSerializer(clientSettings, options =>
+                {
+                    // Base defaults from Foundatio + app-specific overrides
+                    options.ConfigureFoundatioRepositoryDefaults();
+                    options.ConfigureExceptionlessDefaults();
+
+                    // ES-specific overrides (legacy data compatibility)
+                    options.RespectNullableAnnotations = false;
+
+                    // ES needs integers as long and our custom ObjectToInferredTypesConverter.
+                    // Remove any JsonStringEnumConverter (most enums store as integers in ES;
+                    // StackStatus has a type-level [JsonConverter] that takes precedence).
+                    // Remove existing ObjectToInferredTypesConverter instances and insert ours at position 0.
+                    for (int i = options.Converters.Count - 1; i >= 0; i--)
+                    {
+                        if (options.Converters[i] is System.Text.Json.Serialization.JsonStringEnumConverter
+                            or Exceptionless.Core.Serialization.ObjectToInferredTypesConverter
+                            or Foundatio.Repositories.Serialization.ObjectToInferredTypesConverter)
+                            options.Converters.RemoveAt(i);
+                    }
+                    options.Converters.Insert(0, new Exceptionless.Core.Serialization.ObjectToInferredTypesConverter(preferInt64: true));
+                })));
+    }
+
+    private ElasticsearchClientSettings ConfigureElasticsearchClientSettings(ElasticsearchClientSettings settings)
+    {
+        ConfigureSettings(settings);
+        foreach (var index in Indexes)
+            index.ConfigureSettings(settings);
+
+        if (!String.IsNullOrEmpty(_appOptions.ElasticsearchOptions.UserName) && !String.IsNullOrEmpty(_appOptions.ElasticsearchOptions.Password))
+            settings.Authentication(new BasicAuthentication(_appOptions.ElasticsearchOptions.UserName, _appOptions.ElasticsearchOptions.Password));
+
+        return settings;
+    }
+
+    protected override NodePool CreateConnectionPool()
+    {
+        var serverUris = Options.ServerUrl?.Split(',').Select(url => new Uri(url))
+            ?? throw new InvalidOperationException("ElasticsearchOptions.ServerUrl is not configured.");
+        return new StaticNodePool(serverUris);
+    }
+
+    protected override void ConfigureSettings(ElasticsearchClientSettings settings)
+    {
+        if (_appOptions.AppMode == AppMode.Development)
+            settings.EnableDebugMode();
+
+        settings.ServerCertificateValidationCallback((_, _, _, _) => true);
+        settings.DisableDirectStreaming();
+        settings.EnableTcpKeepAlive(TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(2));
+        settings.DefaultFieldNameInferrer(p => p.ToLowerUnderscoredWords());
+        settings.MaximumRetries(5);
+    }
+}

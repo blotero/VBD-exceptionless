@@ -1,0 +1,77 @@
+﻿using Exceptionless.Core.Extensions;
+using Exceptionless.Core.Models;
+using Exceptionless.Core.Repositories.Configuration;
+using Exceptionless.Core.Validation;
+using Foundatio.Repositories;
+using Foundatio.Repositories.Models;
+using Microsoft.Extensions.Logging;
+
+namespace Exceptionless.Core.Repositories;
+
+public sealed class WebHookRepository : RepositoryOwnedByOrganizationAndProject<WebHook>, IWebHookRepository
+{
+    public WebHookRepository(ExceptionlessElasticConfiguration configuration, MiniValidationValidator validator,
+        AppOptions options)
+        : base(configuration.WebHooks, validator, options)
+    {
+    }
+
+    public Task<FindResults<WebHook>> GetByUrlAsync(string targetUrl)
+    {
+        return FindAsync(q => q.FieldEquals(w => w.Url, targetUrl).Sort(f => f.CreatedUtc));
+    }
+
+    public Task<FindResults<WebHook>> GetByOrganizationIdOrProjectIdAsync(string organizationId, string projectId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(organizationId);
+        ArgumentException.ThrowIfNullOrEmpty(projectId);
+
+        // Match organization-level webhooks (organization matches, no project) OR project-specific webhooks
+        return FindAsync(q => q
+            .FieldOr(g => g
+                .FieldAnd(a => a
+                    .FieldEquals(w => w.OrganizationId, organizationId)
+                    .FieldEmpty(w => w.ProjectId))
+                .FieldEquals(w => w.ProjectId, projectId))
+            .Sort(f => f.CreatedUtc), o => o.Cache(PagedCacheKey(organizationId, projectId)));
+    }
+
+    public override Task<FindResults<WebHook>> GetByProjectIdAsync(string projectId, CommandOptionsDescriptor<WebHook>? options = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(projectId);
+
+        return FindAsync(q => q.Project(projectId).Sort(f => f.CreatedUtc), options);
+    }
+
+    public async Task MarkDisabledAsync(string id)
+    {
+        var webHook = await GetByIdAsync(id);
+        if (webHook is null)
+        {
+            _logger.LogWarning("WebHook {WebHookId} not found when marking as disabled", id);
+            return;
+        }
+
+        if (!webHook.IsEnabled)
+            return;
+
+        webHook.IsEnabled = false;
+        await SaveAsync(webHook, o => o.Cache());
+    }
+
+    protected override async Task InvalidateCacheAsync(IReadOnlyCollection<ModifiedDocument<WebHook>> documents, ChangeType? changeType = null)
+    {
+        var originalAndModifiedDocuments = documents.UnionOriginalAndModified();
+        var keysToRemove = originalAndModifiedDocuments.Select(CacheKey).Distinct();
+        await Cache.RemoveAllAsync(keysToRemove);
+
+        var pagedKeysToRemove = originalAndModifiedDocuments.Select(d => PagedCacheKey(d.OrganizationId, d.ProjectId)).Distinct();
+        foreach (string key in pagedKeysToRemove)
+            await Cache.RemoveByPrefixAsync(key);
+
+        await base.InvalidateCacheAsync(documents, changeType);
+    }
+
+    private static string CacheKey(WebHook webHook) => String.Concat("Organization:", webHook.OrganizationId, ":Project:", webHook.ProjectId);
+    private static string PagedCacheKey(string organizationId, string projectId) => String.Concat("paged:Organization:", organizationId, ":Project:", projectId);
+}

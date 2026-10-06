@@ -1,0 +1,225 @@
+using System.Security.Claims;
+using Exceptionless.Core.Authorization;
+using Exceptionless.Core.Models;
+using IIdentity = System.Security.Principal.IIdentity;
+
+namespace Exceptionless.Core.Extensions;
+
+public static class IdentityUtils
+{
+    public const string TokenAuthenticationType = "Token";
+    public const string UserAuthenticationType = "User";
+    public const string LoggedInUsersTokenId = "LoggedInUsersTokenId";
+    public const string OrganizationIdsClaim = "OrganizationIds";
+    public const string ProjectIdClaim = "ProjectId";
+    public const string DefaultProjectIdClaim = "DefaultProjectId";
+    public const string OAuthClientIdClaim = "OAuthClientId";
+    public const string OAuthResourceClaim = "OAuthResource";
+
+    public static ClaimsIdentity ToIdentity(this Token token)
+    {
+        if (token.Type != TokenType.Access)
+            return new ClaimsIdentity();
+
+        if (!String.IsNullOrEmpty(token.UserId))
+            throw new ApplicationException("Can't create token type identity for user token.");
+
+        var claims = new List<Claim>(5 + token.Scopes.Count) {
+                new(ClaimTypes.NameIdentifier, token.Id),
+                new(OrganizationIdsClaim, token.OrganizationId)
+            };
+
+        if (!String.IsNullOrEmpty(token.ProjectId))
+            claims.Add(new Claim(ProjectIdClaim, token.ProjectId));
+
+        if (!String.IsNullOrEmpty(token.DefaultProjectId))
+            claims.Add(new Claim(DefaultProjectIdClaim, token.DefaultProjectId));
+
+        if (token.Scopes.Count > 0)
+        {
+            foreach (string scope in token.Scopes)
+                claims.Add(new Claim(ClaimTypes.Role, scope));
+        }
+        else
+        {
+            claims.Add(new Claim(ClaimTypes.Role, AuthorizationRoles.Client));
+        }
+
+        return new ClaimsIdentity(claims, TokenAuthenticationType);
+    }
+
+    public static ClaimsIdentity ToIdentity(this User user, Token? token = null)
+    {
+        return user.ToIdentity(token, null);
+    }
+
+    public static ClaimsIdentity ToIdentity(this User user, Token? token, IReadOnlyCollection<string>? organizationIds)
+    {
+        organizationIds ??= user.OrganizationIds.ToArray();
+
+        var claims = new List<Claim>(7 + user.Roles.Count) {
+                    new(ClaimTypes.Name, user.EmailAddress),
+                    new(ClaimTypes.NameIdentifier, user.Id),
+                    new(OrganizationIdsClaim, String.Join(",", organizationIds))
+                };
+
+        if (token is not null)
+        {
+            claims.Add(new Claim(LoggedInUsersTokenId, token.Id));
+
+            if (!String.IsNullOrEmpty(token.DefaultProjectId))
+                claims.Add(new Claim(DefaultProjectIdClaim, token.DefaultProjectId));
+        }
+
+        if (token is { Type: TokenType.Access } && token.Scopes.Count > 0)
+        {
+            foreach (string scope in token.Scopes)
+                claims.Add(new Claim(ClaimTypes.Role, scope));
+        }
+        else if (user.Roles.Count > 0)
+        {
+            // add implied scopes
+            var roles = user.Roles.ToHashSet();
+            if (roles.Contains(AuthorizationRoles.GlobalAdmin))
+                roles.Add(AuthorizationRoles.User);
+
+            if (roles.Contains(AuthorizationRoles.User))
+                roles.Add(AuthorizationRoles.Client);
+
+            foreach (string role in roles)
+                claims.Add(new Claim(ClaimTypes.Role, role));
+        }
+        else
+        {
+            claims.Add(new Claim(ClaimTypes.Role, AuthorizationRoles.Client));
+            claims.Add(new Claim(ClaimTypes.Role, AuthorizationRoles.User));
+        }
+
+        string authenticationType = token is { Type: TokenType.Access } ? TokenAuthenticationType : UserAuthenticationType;
+        return new ClaimsIdentity(claims, authenticationType);
+    }
+
+    public static ClaimsIdentity ToIdentity(this User user, OAuthToken token, IReadOnlyCollection<string>? organizationIds = null)
+    {
+        organizationIds ??= user.GetActiveOAuthOrganizationIds(token);
+
+        var claims = new List<Claim>(6 + token.Scopes.Count) {
+                    new(ClaimTypes.Name, user.EmailAddress),
+                    new(ClaimTypes.NameIdentifier, user.Id),
+                    new(OrganizationIdsClaim, String.Join(",", organizationIds)),
+                    new(LoggedInUsersTokenId, token.Id),
+                    new(OAuthClientIdClaim, token.ClientId),
+                    new(OAuthResourceClaim, token.Resource)
+                };
+
+        foreach (string scope in token.Scopes)
+            claims.Add(new Claim(ClaimTypes.Role, scope));
+
+        return new ClaimsIdentity(claims, TokenAuthenticationType);
+    }
+
+    public static IReadOnlyCollection<string> GetActiveOAuthOrganizationIds(this User user, OAuthToken token)
+    {
+        var userOrganizationIds = user.OrganizationIds.ToHashSet(StringComparer.Ordinal);
+        return token.OrganizationIds.Where(userOrganizationIds.Contains).Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    public static bool IsAuthenticated(this ClaimsPrincipal principal)
+    {
+        return principal.Identity is not null && principal.Identity.IsAuthenticated;
+    }
+
+    public static AuthType GetAuthType(this ClaimsPrincipal principal)
+    {
+        if (!principal.IsAuthenticated())
+            return AuthType.Anonymous;
+
+        return IsTokenAuthType(principal) ? AuthType.Token : AuthType.User;
+    }
+
+    public static bool IsTokenAuthType(this ClaimsPrincipal principal)
+    {
+        var identity = GetClaimsIdentity(principal);
+        if (identity is null)
+            return false;
+
+        return identity.AuthenticationType == TokenAuthenticationType;
+    }
+
+    public static bool IsUserAuthType(this ClaimsPrincipal principal)
+    {
+        var identity = GetClaimsIdentity(principal);
+        if (identity is null)
+            return false;
+
+        return identity.AuthenticationType == UserAuthenticationType;
+    }
+
+    public static ClaimsIdentity? GetClaimsIdentity(this ClaimsPrincipal principal)
+    {
+        return principal.Identity as ClaimsIdentity;
+    }
+
+    public static string? GetUserId(this ClaimsPrincipal principal)
+    {
+        return IsUserAuthType(principal) ? GetClaimValue(principal, ClaimTypes.NameIdentifier) : null;
+    }
+
+    /// <summary>
+    /// Gets the token id that authenticated the current user.
+    /// </summary>
+    public static string? GetLoggedInUsersTokenId(this ClaimsPrincipal principal)
+    {
+        return IsUserAuthType(principal) ? GetClaimValue(principal, LoggedInUsersTokenId) : null;
+    }
+
+    public static string? GetTokenOrganizationId(this ClaimsPrincipal principal)
+    {
+        return GetClaimValue(principal, OrganizationIdsClaim);
+    }
+
+    public static string[] GetOrganizationIds(this ClaimsPrincipal principal)
+    {
+        string? ids = GetClaimValue(principal, OrganizationIdsClaim);
+        if (String.IsNullOrEmpty(ids))
+            return [];
+
+        return ids.Split([','], StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    public static string? GetProjectId(this ClaimsPrincipal principal)
+    {
+        return GetClaimValue(principal, ProjectIdClaim);
+    }
+
+    public static string? GetDefaultProjectId(this ClaimsPrincipal principal)
+    {
+        // if this claim is for a specific project, then that is always the default project.
+        return GetClaimValue(principal, ProjectIdClaim) ?? GetClaimValue(principal, DefaultProjectIdClaim);
+    }
+
+    public static string? GetClaimValue(this ClaimsPrincipal principal, string type)
+    {
+        var identity = principal?.GetClaimsIdentity();
+        if (identity is null)
+            return null;
+
+        return GetClaimValue(identity, type);
+    }
+
+    public static string? GetClaimValue(this IIdentity identity, string type)
+    {
+        if (identity is not ClaimsIdentity claimsIdentity)
+            return null;
+
+        var claim = claimsIdentity.FindAll(type).FirstOrDefault();
+        return claim?.Value;
+    }
+}
+
+public enum AuthType
+{
+    User,
+    Token,
+    Anonymous
+}

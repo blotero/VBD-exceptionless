@@ -1,0 +1,46 @@
+﻿using Exceptionless.Core.Models.WorkItems;
+using Exceptionless.Core.Repositories;
+using Foundatio.Jobs;
+using Foundatio.Lock;
+using Foundatio.Repositories;
+using Foundatio.Repositories.Models;
+using Microsoft.Extensions.Logging;
+
+namespace Exceptionless.Core.Jobs.WorkItemHandlers;
+
+public class SetProjectIsConfiguredWorkItemHandler : WorkItemHandlerBase
+{
+    private readonly IProjectRepository _projectRepository;
+    private readonly IEventRepository _eventRepository;
+
+    private readonly ILockProvider _lockProvider;
+
+    public SetProjectIsConfiguredWorkItemHandler(IProjectRepository projectRepository, IEventRepository eventRepository, ILockProvider lockProvider, ILoggerFactory loggerFactory) : base(loggerFactory)
+    {
+        _projectRepository = projectRepository;
+        _eventRepository = eventRepository;
+        _lockProvider = lockProvider;
+    }
+
+    public override Task<ILock?> GetWorkItemLockAsync(object workItem, CancellationToken cancellationToken = default)
+    {
+        string cacheKey = $"{nameof(SetProjectIsConfiguredWorkItemHandler)}:{((SetProjectIsConfiguredWorkItem)workItem).ProjectId}";
+        return _lockProvider.TryAcquireAsync(cacheKey, TimeSpan.FromMinutes(15), cancellationToken);
+    }
+
+    public override async Task HandleItemAsync(WorkItemContext context)
+    {
+        var workItem = context.GetData<SetProjectIsConfiguredWorkItem>()!;
+
+        Log.LogInformation("Setting Is Configured for project: {ProjectId}", workItem.ProjectId);
+
+        var project = await _projectRepository.GetByIdAsync(workItem.ProjectId);
+        if (project is null || project.IsConfigured.GetValueOrDefault())
+            return;
+
+        bool isConfigured = workItem.IsConfigured || await _eventRepository.CountAsync(q => q.Project(project.Id)) > 0;
+        // A project can be edited or deleted while this work item runs. Updating only
+        // this field preserves those changes instead of saving an outdated snapshot.
+        await _projectRepository.PatchAsync(project.Id, new PartialPatch(new { is_configured = isConfigured }));
+    }
+}

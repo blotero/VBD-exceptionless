@@ -1,0 +1,180 @@
+using Exceptionless.Core.Billing;
+using Exceptionless.Core.Extensions;
+using Exceptionless.Core.Models;
+using Exceptionless.Core.Repositories;
+using Exceptionless.Core.Repositories.Queries;
+using Exceptionless.Tests.Utility;
+using Foundatio.Caching;
+using Foundatio.Repositories;
+using Foundatio.Repositories.Models;
+using Foundatio.Serializer;
+using Xunit;
+
+namespace Exceptionless.Tests.Repositories;
+
+public sealed class ProjectRepositoryTests : IntegrationTestsBase
+{
+    private readonly ICacheClient _cache;
+    private readonly OrganizationData _organizationData;
+    private readonly ProjectData _projectData;
+    private readonly IProjectRepository _repository;
+    private readonly ITextSerializer _serializer;
+
+    public ProjectRepositoryTests(ITestOutputHelper output, AppWebHostFactory factory) : base(output, factory)
+    {
+        _organizationData = GetService<OrganizationData>();
+        _projectData = GetService<ProjectData>();
+        _cache = GetService<ICacheClient>();
+        _repository = GetService<IProjectRepository>();
+        _serializer = GetService<ITextSerializer>();
+    }
+
+    [Fact]
+    public async Task IncrementNextSummaryEndOfDayTicksAsync()
+    {
+        Assert.Equal(0, await _repository.CountAsync());
+
+        var project = await _repository.AddAsync(_projectData.GenerateSampleProject(), o => o.ImmediateConsistency());
+        Assert.NotNull(project.Id);
+        Assert.Equal(1, await _repository.CountAsync());
+        Assert.Equal(1, await _repository.GetCountByOrganizationIdAsync(project.OrganizationId));
+
+        await _repository.IncrementNextSummaryEndOfDayTicksAsync(new[] { project });
+        await RefreshDataAsync();
+
+        var updatedProject = await _repository.GetByIdAsync(project.Id);
+        Assert.NotNull(updatedProject);
+        // TODO: Modified date isn't currently updated in the update scripts.
+        //Assert.NotEqual(project.ModifiedUtc, updatedProject.ModifiedUtc);
+        Assert.Equal(project.NextSummaryEndOfDayTicks + TimeSpan.TicksPerDay, updatedProject.NextSummaryEndOfDayTicks);
+
+        Assert.Equal(1, await _repository.CountAsync());
+        Assert.Equal(1, await _repository.GetCountByOrganizationIdAsync(project.OrganizationId));
+
+        var project2 = await _repository.AddAsync(_projectData.GenerateProject(organizationId: project.OrganizationId), o => o.ImmediateConsistency());
+        Assert.NotNull(project2.Id);
+
+        Assert.Equal(2, await _repository.CountAsync());
+        Assert.Equal(2, await _repository.GetCountByOrganizationIdAsync(project.OrganizationId));
+
+        await _repository.RemoveAsync(project2, o => o.Notifications(false).ImmediateConsistency());
+        Assert.Equal(1, await _repository.CountAsync());
+        Assert.Equal(1, await _repository.GetCountByOrganizationIdAsync(project.OrganizationId));
+    }
+
+    [Fact]
+    public async Task GetByOrganizationIdsAsync()
+    {
+        var project1 = await _repository.AddAsync(_projectData.GenerateProject(id: TestConstants.ProjectId, organizationId: TestConstants.OrganizationId, name: "One"), o => o.ImmediateConsistency());
+        var project2 = await _repository.AddAsync(_projectData.GenerateProject(id: TestConstants.SuspendedProjectId, organizationId: TestConstants.OrganizationId, name: "Two"), o => o.ImmediateConsistency());
+
+        var results = await _repository.GetByOrganizationIdsAsync(new[] { project1.OrganizationId, TestConstants.OrganizationId2 });
+        Assert.NotNull(results);
+        Assert.Equal(2, results.Documents.Count);
+
+        results = await _repository.GetByOrganizationIdsAsync(new[] { project1.OrganizationId });
+        Assert.NotNull(results);
+        Assert.Equal(2, results.Documents.Count);
+
+        results = await _repository.GetByOrganizationIdsAsync(new[] { TestConstants.OrganizationId2 });
+        Assert.NotNull(results);
+        Assert.Empty(results.Documents);
+
+        await _repository.RemoveAsync(project2.Id, o => o.Notifications(false).ImmediateConsistency());
+        results = await _repository.GetByOrganizationIdsAsync(new[] { project1.OrganizationId });
+        Assert.NotNull(results);
+        Assert.Single(results.Documents);
+        await _repository.RemoveAllAsync(o => o.Notifications(false));
+    }
+
+    [Fact]
+    public async Task GetByFilterAsyncAsync()
+    {
+        var organizations = _organizationData.GenerateSampleOrganizations(GetService<BillingManager>(), GetService<BillingPlans>());
+        var organization1 = organizations.Single(o => String.Equals(o.Id, TestConstants.OrganizationId));
+        var organization2 = organizations.Single(o => String.Equals(o.Id, TestConstants.OrganizationId2));
+
+        var project1 = await _repository.AddAsync(_projectData.GenerateProject(id: TestConstants.ProjectId, organizationId: organization1.Id, name: "One"), o => o.ImmediateConsistency());
+        var project2 = await _repository.AddAsync(_projectData.GenerateProject(id: TestConstants.SuspendedProjectId, organizationId: organization1.Id, name: "Two"), o => o.ImmediateConsistency());
+
+        var results = await _repository.GetByFilterAsync(new AppFilter(organizations), null, null);
+        Assert.NotNull(results);
+        Assert.Equal(2, results.Documents.Count);
+
+        results = await _repository.GetByFilterAsync(new AppFilter(organization1), null, null);
+        Assert.NotNull(results);
+        Assert.Equal(2, results.Documents.Count);
+
+        results = await _repository.GetByFilterAsync(new AppFilter(organization2), null, null);
+        Assert.NotNull(results);
+        Assert.Empty(results.Documents);
+
+        results = await _repository.GetByFilterAsync(new AppFilter(organization1), "name:one", null);
+        Assert.NotNull(results);
+        Assert.Single(results.Documents);
+        Assert.Equal(project1.Name, results.Documents.Single().Name);
+
+        await _repository.RemoveAsync(project2.Id, o => o.Notifications(false).ImmediateConsistency());
+        results = await _repository.GetByFilterAsync(new AppFilter(organization1), null, null);
+        Assert.NotNull(results);
+        Assert.Single(results.Documents);
+        await _repository.RemoveAllAsync(o => o.Notifications(false));
+    }
+
+    [Fact]
+    public async Task CanRoundTripWithCaching()
+    {
+        var token = new SlackToken
+        {
+            AccessToken = "MY KEY",
+            IncomingWebhook = new SlackToken.IncomingWebHook
+            {
+                Url = "MY Url"
+            }
+        };
+
+        var project = _projectData.GenerateSampleProject();
+        project.Data ??= new DataDictionary();
+        project.Data[Project.KnownDataKeys.SlackToken] = token;
+
+        await _repository.AddAsync(project, o => o.ImmediateConsistency());
+        var actual = await _repository.GetByIdAsync(project.Id, o => o.Cache());
+        Assert.NotNull(actual);
+        Assert.Equal(project.Name, actual.Name);
+
+        var actualToken = actual.GetSlackToken(_serializer);
+        Assert.Equal(token.AccessToken, actualToken?.AccessToken);
+
+        var actualCache = await _cache.GetAsync<ICollection<FindHit<Project>>>("Project:" + project.Id);
+        Assert.True(actualCache.HasValue);
+        Assert.NotNull(actualCache.Value);
+        var cachedDocs = actualCache.Value;
+        var cachedDoc = cachedDocs.Single();
+        Assert.NotNull(cachedDoc.Document);
+        Assert.Equal(project.Name, cachedDoc.Document.Name);
+        var actualCacheToken = actual.GetSlackToken(_serializer);
+        Assert.Equal(token.AccessToken, actualCacheToken?.AccessToken);
+    }
+
+    [Fact]
+    public async Task GetByNextSummaryNotificationOffset_FilterExpression_FiltersCorrectly()
+    {
+        // Arrange
+        var pastProject = _projectData.GenerateProject(generateId: true,
+            organizationId: TestConstants.OrganizationId, name: "Past Project",
+            nextSummaryEndOfDayTicks: DateTime.UtcNow.AddDays(-2).Ticks);
+
+        var futureProject = _projectData.GenerateProject(generateId: true,
+            organizationId: TestConstants.OrganizationId, name: "Future Project",
+            nextSummaryEndOfDayTicks: DateTime.UtcNow.AddDays(2).Ticks);
+
+        await _repository.AddAsync([pastProject, futureProject], o => o.ImmediateConsistency());
+
+        // Act — with hourToSendNotificationsAfterUtcMidnight=0, threshold is current time
+        var results = await _repository.GetByNextSummaryNotificationOffsetAsync(0, limit: 50);
+
+        // Assert — pastProject should be returned (ticks < threshold), futureProject should not
+        Assert.Contains(results.Documents, p => String.Equals(p.Id, pastProject.Id, StringComparison.Ordinal));
+        Assert.DoesNotContain(results.Documents, p => String.Equals(p.Id, futureProject.Id, StringComparison.Ordinal));
+    }
+}

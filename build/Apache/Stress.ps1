@@ -1,0 +1,1 @@
+.\ab.exe -c 10 -n 50000 -p events.json -T application/json -A client:LhhP1C9gijpSKCslHHCvwdSIz298twx271nTest http://localhost:7110/api/v2/events

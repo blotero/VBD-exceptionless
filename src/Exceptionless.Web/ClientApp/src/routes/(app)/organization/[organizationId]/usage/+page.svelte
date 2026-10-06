@@ -1,0 +1,182 @@
+<script lang="ts">
+    import { page } from '$app/state';
+    import ErrorMessage from '$comp/error-message.svelte';
+    import Number from '$comp/formatters/number.svelte';
+    import TimeAgo from '$comp/formatters/time-ago.svelte';
+    import { Muted, Small } from '$comp/typography';
+    import { Button } from '$comp/ui/button';
+    import * as Chart from '$comp/ui/chart/index';
+    import { Skeleton } from '$comp/ui/skeleton';
+    import { env } from '$env/dynamic/public';
+    import { ChangePlanDialog } from '$features/billing';
+    import { getOrganizationQuery } from '$features/organizations/api.svelte';
+    import { getNextBillingDateUtc, getRemainingEventLimit, ORGANIZATION_USAGE_REFETCH_INTERVAL_MS } from '$features/organizations/utils';
+    import { formatDateLabel, formatLongDate } from '$shared/dates';
+    import { scaleUtc } from 'd3-scale';
+    import { curveMonotoneX } from 'd3-shape';
+    import { AreaChart } from 'layerchart';
+
+    const organizationQuery = getOrganizationQuery({
+        refetchInterval: ORGANIZATION_USAGE_REFETCH_INTERVAL_MS,
+        route: {
+            get id() {
+                return page.params.organizationId || '';
+            }
+        }
+    });
+
+    const hasMonthlyUsage = $derived((organizationQuery.data?.max_events_per_month ?? 0) > 0);
+    const canChangePlan = $derived(organizationQuery.isSuccess && !!env.PUBLIC_STRIPE_PUBLISHABLE_KEY);
+    const remainingEventLimit = $derived(getRemainingEventLimit(organizationQuery.data));
+    const nextBillingDate = $derived(getNextBillingDateUtc(organizationQuery.data));
+
+    let changePlanDialogOpen = $state(false);
+
+    const chartConfig = {
+        blocked: {
+            color: 'var(--chart-2)',
+            label: 'Blocked'
+        },
+        deleted: {
+            color: 'var(--chart-7)',
+            label: 'Deleted'
+        },
+        discarded: {
+            color: 'var(--chart-3)',
+            label: 'Discarded'
+        },
+        limit: {
+            color: 'var(--chart-6)',
+            label: 'Limit'
+        },
+        too_big: {
+            color: 'var(--chart-4)',
+            label: 'Too Big'
+        },
+        total: {
+            color: 'var(--chart-1)',
+            label: 'Total'
+        }
+    } satisfies Chart.ChartConfig;
+
+    const chartData = $derived.by(() => {
+        const organization = organizationQuery.data;
+
+        if (!organization?.usage) {
+            return [];
+        }
+
+        return organization.usage.map((usage) => {
+            return {
+                ...usage,
+                date: new Date(usage.date)
+            };
+        });
+    });
+
+    const series = [
+        {
+            key: 'total',
+            ...chartConfig.total
+        },
+        {
+            key: 'discarded',
+            ...chartConfig.discarded
+        },
+        {
+            key: 'blocked',
+            ...chartConfig.blocked
+        },
+        {
+            key: 'too_big',
+            ...chartConfig.too_big
+        },
+        {
+            key: 'deleted',
+            ...chartConfig.deleted
+        },
+        {
+            key: 'limit',
+            ...chartConfig.limit,
+            props: {
+                class: 'fill-none',
+                line: {
+                    class: '[stroke-dasharray:4]'
+                }
+            }
+        }
+    ];
+</script>
+
+<div class="space-y-6">
+    <Muted>View your historical usage</Muted>
+
+    {#if organizationQuery.isLoading}
+        <div class="space-y-4">
+            <Skeleton class="h-12 w-3/4" />
+            <Skeleton class="h-50 w-full" />
+            <Skeleton class="h-6 w-1/3" />
+        </div>
+    {:else if organizationQuery.error}
+        <ErrorMessage message="Unable to load usage data." />
+    {:else if !hasMonthlyUsage}
+        <Muted>Monthly usage is not available for this organization. Please contact support for more information</Muted>
+    {:else}
+        <div class="space-y-6">
+            <div class="bg-muted/20 rounded-md border p-4">
+                <p>
+                    You are currently on the
+                    {#if canChangePlan}
+                        <Button variant="link" class="h-auto p-0" onclick={() => (changePlanDialogOpen = true)}>
+                            <span class="font-bold">{organizationQuery.data?.plan_name}</span> plan</Button
+                        >
+                    {:else}
+                        <span class="font-bold">{organizationQuery.data?.plan_name}</span> plan
+                    {/if}
+                    with
+                    <span class={remainingEventLimit === 0 ? 'text-destructive font-bold' : 'font-bold'}>
+                        <Number value={remainingEventLimit} />
+                    </span>
+                    events remaining until this billing period's limit is reset on
+                    <span class="font-bold">{formatLongDate(nextBillingDate)}</span>
+                    (<TimeAgo value={nextBillingDate} />).
+
+                    {#if canChangePlan}
+                        <Button variant="link" class="h-auto p-0" onclick={() => (changePlanDialogOpen = true)}
+                            >Click here to change your plan or billing information.</Button
+                        >
+                    {/if}
+                </p>
+            </div>
+
+            <Chart.Container config={chartConfig} class="aspect-auto h-62.5 w-full">
+                <AreaChart
+                    legend
+                    data={chartData}
+                    x="date"
+                    xScale={scaleUtc()}
+                    yDomain={[0, Math.max(1, ...chartData.map((d) => Math.max(d.total, d.limit, d.blocked, d.discarded, d.too_big, d.deleted)))]}
+                    {series}
+                    props={{
+                        area: {
+                            curve: curveMonotoneX
+                        },
+                        yAxis: {
+                            format: 'metric'
+                        }
+                    }}
+                >
+                    {#snippet tooltip()}
+                        <Chart.Tooltip class="min-w-57.5" indicator="line" labelFormatter={(v) => formatDateLabel(v as Date)} />
+                    {/snippet}
+                </AreaChart>
+            </Chart.Container>
+
+            <Small class="text-xs">The usage data above is refreshed periodically and may not reflect current totals.</Small>
+        </div>
+    {/if}
+</div>
+
+{#if changePlanDialogOpen && organizationQuery.data}
+    <ChangePlanDialog organization={organizationQuery.data} onclose={() => (changePlanDialogOpen = false)} />
+{/if}

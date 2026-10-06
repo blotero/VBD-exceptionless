@@ -1,0 +1,30 @@
+﻿using Exceptionless.Core.Models;
+using Exceptionless.Core.Validation;
+using Foundatio.Repositories;
+using Foundatio.Repositories.Elasticsearch.Configuration;
+using Foundatio.Repositories.Models;
+
+namespace Exceptionless.Core.Repositories;
+
+public abstract class RepositoryOwnedByOrganizationAndProject<T> : RepositoryOwnedByOrganization<T>, IRepositoryOwnedByProject<T> where T : class, IOwnedByProject, IIdentity, IOwnedByOrganization, new()
+{
+    public RepositoryOwnedByOrganizationAndProject(IIndex index, MiniValidationValidator validator, AppOptions options) : base(index, validator, options)
+    {
+        AddRequiredField(o => o.ProjectId);
+    }
+
+    public virtual Task<FindResults<T>> GetByProjectIdAsync(string projectId, CommandOptionsDescriptor<T>? options = null)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(projectId);
+
+        return FindAsync(q => q.Project(projectId), options);
+    }
+
+    public virtual Task<long> RemoveAllByProjectIdAsync(string organizationId, string projectId)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(organizationId);
+        ArgumentException.ThrowIfNullOrEmpty(projectId);
+
+        return RemoveAllAsync(q => q.Organization(organizationId).Project(projectId));
+    }
+}

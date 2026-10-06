@@ -1,0 +1,155 @@
+<script lang="ts">
+    import type { PostSetBonusOrganizationParams, PostSuspendOrganizationParams } from '$features/organizations/api.svelte';
+    import type { ViewOrganization } from '$features/organizations/models';
+
+    import { Button } from '$comp/ui/button';
+    import * as DropdownMenu from '$comp/ui/dropdown-menu';
+    import { runMaintenanceJobMutation } from '$features/admin/api.svelte';
+    import RunMaintenanceJobDialog from '$features/admin/components/dialogs/run-maintenance-job-dialog.svelte';
+    import { maintenanceActions } from '$features/admin/models';
+    import { deleteSuspendOrganization, postSetBonusOrganization, postSuspendOrganization } from '$features/organizations/api.svelte';
+    import SetEventBonusDialog from '$features/organizations/components/dialogs/set-event-bonus-dialog.svelte';
+    import SuspendOrganizationDialog from '$features/organizations/components/dialogs/suspend-organization-dialog.svelte';
+    import { getProblemMessage } from '$features/shared/validation';
+    import Award from '@lucide/svelte/icons/award';
+    import Pause from '@lucide/svelte/icons/pause';
+    import Play from '@lucide/svelte/icons/play';
+    import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+    import Shield from '@lucide/svelte/icons/shield';
+    import { toast } from 'svelte-sonner';
+
+    interface Props {
+        organization: undefined | ViewOrganization;
+    }
+
+    let { organization }: Props = $props();
+
+    let toastId = $state<number | string>();
+    let openSuspendOrganizationDialog = $state(false);
+    let openSetEventBonusDialog = $state(false);
+    let openFixStackStatsDialog = $state(false);
+
+    const markSuspended = postSuspendOrganization({
+        route: {
+            get id() {
+                return organization?.id;
+            }
+        }
+    });
+
+    const markUnsuspended = deleteSuspendOrganization({
+        route: {
+            get id() {
+                return organization?.id;
+            }
+        }
+    });
+
+    const setOrganizationBonus = postSetBonusOrganization();
+    const runJob = runMaintenanceJobMutation();
+
+    async function handleFixStackStats(params: Parameters<typeof runJob.mutateAsync>[0]) {
+        toast.dismiss(toastId);
+
+        try {
+            await runJob.mutateAsync(params);
+            toastId = toast.success('Successfully enqueued the Fix Stack Stats job.');
+        } catch (error: unknown) {
+            toastId = toast.error(`An error occurred while starting the job: ${getProblemMessage(error, 'Please try again.')}`);
+            throw error;
+        }
+    }
+
+    function handleSetBonus() {
+        openSetEventBonusDialog = true;
+    }
+
+    async function handleUnsuspend() {
+        toast.dismiss(toastId);
+
+        try {
+            await markUnsuspended.mutateAsync();
+            toastId = toast.success('Successfully unsuspended the organization.');
+        } catch (error: unknown) {
+            toastId = toast.error(`An error occurred while trying to unsuspend the organization: ${getProblemMessage(error, 'Please try again.')}`);
+        }
+    }
+
+    async function setBonus(params: PostSetBonusOrganizationParams) {
+        toast.dismiss(toastId);
+
+        try {
+            await setOrganizationBonus.mutateAsync(params);
+            toastId = toast.success('Successfully set the organization bonus.');
+        } catch (error: unknown) {
+            toastId = toast.error(`An error occurred while trying to set the organization bonus: ${getProblemMessage(error, 'Please try again.')}`);
+            throw error;
+        }
+    }
+
+    async function suspend(params: PostSuspendOrganizationParams) {
+        toast.dismiss(toastId);
+
+        try {
+            await markSuspended.mutateAsync(params);
+            toastId = toast.success('Successfully suspended the organization.');
+        } catch (error: unknown) {
+            toastId = toast.error(`An error occurred while trying to suspend the organization: ${getProblemMessage(error, 'Please try again.')}`);
+            throw error;
+        }
+    }
+</script>
+
+<DropdownMenu.Root>
+    <DropdownMenu.Trigger>
+        {#snippet child({ props })}
+            <Button {...props} variant="outline" size="icon" aria-label="Admin Actions" title="Admin Actions">
+                <Shield class="size-4" />
+            </Button>
+        {/snippet}
+    </DropdownMenu.Trigger>
+    <DropdownMenu.Content align="end" class="w-56">
+        <DropdownMenu.Group>
+            <DropdownMenu.GroupHeading>Admin Actions</DropdownMenu.GroupHeading>
+            <DropdownMenu.Separator />
+            {#if organization?.is_suspended}
+                <DropdownMenu.Item onclick={handleUnsuspend} disabled={markUnsuspended.isPending}>
+                    <Play class="mr-2 size-4" />
+                    <span>Unsuspend Organization</span>
+                </DropdownMenu.Item>
+            {:else}
+                <DropdownMenu.Item onclick={() => (openSuspendOrganizationDialog = true)} disabled={markSuspended.isPending}>
+                    <Pause class="mr-2 size-4" />
+                    <span>Suspend Organization</span>
+                </DropdownMenu.Item>
+            {/if}
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item onclick={handleSetBonus}>
+                <Award class="mr-2 size-4" />
+                <span>Set Bonus</span>
+            </DropdownMenu.Item>
+            <DropdownMenu.Separator />
+            <DropdownMenu.Item onclick={() => (openFixStackStatsDialog = true)} disabled={runJob.isPending}>
+                <RefreshCw class="mr-2 size-4" />
+                <span>Fix Stack Stats</span>
+            </DropdownMenu.Item>
+        </DropdownMenu.Group>
+    </DropdownMenu.Content>
+</DropdownMenu.Root>
+
+{#if organization && openSuspendOrganizationDialog}
+    <SuspendOrganizationDialog bind:open={openSuspendOrganizationDialog} {organization} {suspend} />
+{/if}
+
+{#if organization && openSetEventBonusDialog}
+    <SetEventBonusDialog bind:open={openSetEventBonusDialog} {organization} {setBonus} />
+{/if}
+
+{#if organization && openFixStackStatsDialog}
+    <RunMaintenanceJobDialog
+        bind:open={openFixStackStatsDialog}
+        action={maintenanceActions.find((a) => a.name === 'fix-stack-stats')!}
+        organizationId={organization.id}
+        onConfirm={handleFixStackStats}
+    />
+{/if}

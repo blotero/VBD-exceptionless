@@ -1,0 +1,68 @@
+version: latest
+
+app:
+  defaultDomain:
+  domains: []
+  image:
+    repository: exceptionless/app
+    pullPolicy: IfNotPresent
+
+api:
+  defaultDomain:
+  domains: []
+  image:
+    repository: exceptionless/api
+    pullPolicy: IfNotPresent
+
+jobs:
+  image:
+    repository: exceptionless/job
+    pullPolicy: IfNotPresent
+
+config: {}
+#  key: value
+
+ingress:
+  enabled: false
+  clusterIssuer: cert-manager-webhook-dnsimple-production
+  albName: public-alb
+  albNamespace: kube-system
+  appRequestTimeout: 0s
+
+service:
+  type: ClusterIP
+
+elasticsearch:
+  connectionString:
+  image:
+    repository: exceptionless/elasticsearch
+    tag: 8.19.22
+    pullPolicy: IfNotPresent
+
+redis:
+  connectionString:
+  image:
+    repository: redis
+    tag: latest
+    pullPolicy: IfNotPresent
+
+storage:
+  connectionString:
+
+cache:
+  connectionString:
+
+metrics:
+  connectionString:
+
+queue:
+  connectionString:
+
+email:
+  connectionString:
+
+messagebus:
+  connectionString:
+
+otel:
+  enabled: true

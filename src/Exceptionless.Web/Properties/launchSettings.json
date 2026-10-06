@@ -1,0 +1,22 @@
+{
+    "profiles": {
+        "http": {
+            "commandName": "Project",
+            "launchBrowser": false,
+            "environmentVariables": {
+                "EX_AppMode": "Development"
+            },
+            "dotnetRunMessages": true,
+            "applicationUrl": "http://localhost:7110"
+        },
+        "https": {
+            "commandName": "Project",
+            "launchBrowser": false,
+            "environmentVariables": {
+                "EX_AppMode": "Development"
+            },
+            "dotnetRunMessages": true,
+            "applicationUrl": "https://localhost:7111;http://localhost:7110"
+        }
+    }
+}
