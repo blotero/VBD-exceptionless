@@ -5,6 +5,7 @@ namespace Exceptionless.Web.Api.Messages;
 public record LoginMessage(Login Model, HttpContext Context);
 public record GetIntercomToken(HttpContext Context);
 public record LogoutMessage(HttpContext Context);
+public record LogoutAllSessionsMessage(HttpContext Context);
 public record SignupMessage(Signup Model, HttpContext Context);
 public record GitHubLogin(ExternalAuthInfo AuthInfo, HttpContext Context);
 public record GoogleLogin(ExternalAuthInfo AuthInfo, HttpContext Context);

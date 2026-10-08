@@ -172,6 +172,32 @@ public class AuthHandler(
         return Result.Success();
     }
 
+    public async Task<Result> Handle(LogoutAllSessionsMessage message)
+    {
+        var httpContext = message.Context;
+        var currentUser = httpContext.Request.GetUser();
+        using var _ = logger.BeginScope(new ExceptionlessState().Tag("Logout").Identity(currentUser.EmailAddress).SetHttpContext(httpContext));
+
+        if (httpContext.User.IsTokenAuthType())
+            return Result.Forbidden("Logout not supported for current user access token");
+
+        try
+        {
+            var sessionTokens = await tokenRepository.GetByTypeAndUserIdAsync(TokenType.Authentication, currentUser.Id, o => o.PageLimit(1000));
+            if (sessionTokens.Documents.Count > 0)
+                await tokenRepository.RemoveAsync(sessionTokens.Documents, o => o.ImmediateConsistency());
+
+            await oauthTokenRepository.RemoveAllByUserIdAsync(currentUser.Id, o => o.ImmediateConsistency());
+        }
+        catch (Exception ex)
+        {
+            logger.LogCritical(ex, "Logout of all sessions failed for {EmailAddress}: {Message}", currentUser.EmailAddress, ex.Message);
+            throw;
+        }
+
+        return Result.Success();
+    }
+
     public async Task<Result<TokenResult>> Handle(SignupMessage message)
     {
         var httpContext = message.Context;

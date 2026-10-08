@@ -77,6 +77,20 @@ public static class AuthEndpoints
             }
         });
 
+        group.MapPost("logout/all", async (IMediator mediator, IMediatorResultMapper<HttpIResult> resultMapper, HttpContext httpContext)
+            => (await mediator.InvokeAsync<Result>(new AuthMessages.LogoutAllSessionsMessage(httpContext))).ToHttpResult(resultMapper))
+        .Produces(StatusCodes.Status200OK)
+        .ProducesProblem(StatusCodes.Status401Unauthorized)
+        .ProducesProblem(StatusCodes.Status403Forbidden)
+        .WithSummary("Logout the current user from all sessions and connected applications")
+        .WithMetadata(new EndpointDocumentation {
+            ResponseDescriptions = new() {
+                ["200"] = "User successfully logged-out of all sessions",
+                ["401"] = "User not logged in",
+                ["403"] = "Current action is not supported with user access token",
+            }
+        });
+
         group.MapPost("signup", async (IMediator mediator, IMediatorResultMapper<HttpIResult> resultMapper, HttpContext httpContext, [FromBody] Signup model) =>
         {
             return (await mediator.InvokeAsync<Result<TokenResult>>(new AuthMessages.SignupMessage(model, httpContext))).ToHttpResult(resultMapper);
