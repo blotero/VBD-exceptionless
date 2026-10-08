@@ -115,6 +115,14 @@ export async function logout(queryClient?: QueryClient, client = useFetchClient(
     if (typeof localStorage !== 'undefined') {
         localStorage.removeItem('organization');
     }
+
+    if (typeof sessionStorage !== 'undefined') {
+        for (const key of Object.keys(sessionStorage)) {
+            if (key.startsWith('exceptionless:saved-view-filter-history:')) {
+                sessionStorage.removeItem(key);
+            }
+        }
+    }
 }
 
 export async function resetPassword(passwordResetToken: string, password: string) {
