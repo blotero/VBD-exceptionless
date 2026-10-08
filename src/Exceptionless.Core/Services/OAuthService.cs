@@ -181,7 +181,7 @@ public class OAuthService(OAuthServerOptions options, ICacheClient cacheClient, 
             return cached.Value;
 
         var application = await oauthApplicationRepository.GetByClientIdAsync(clientId);
-        bool isValid = application is { IsDisabled: false };
+        bool isValid = application is not null;
         await cacheClient.SetAsync(cacheKey, isValid, AccessTokenClientValidityCacheLifetime);
         return isValid;
     }
