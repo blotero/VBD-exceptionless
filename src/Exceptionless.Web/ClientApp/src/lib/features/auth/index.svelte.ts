@@ -1,11 +1,16 @@
+import type { QueryClient } from '@tanstack/svelte-query';
+
 import { goto } from '$app/navigation';
 import { resolve } from '$app/paths';
 import { page } from '$app/state';
 import { env } from '$env/dynamic/public';
+import { organization } from '$features/organizations/context.svelte';
 import { useFetchClient } from '@foundatiofx/fetchclient';
 
 import type { TokenResult } from './models';
 
+import { endSession } from './exceptionless-session';
+import { clearAuthenticationSession } from './session.svelte';
 import { accessToken } from './state.svelte';
 
 // Re-export all API functions for backward compatibility
@@ -140,6 +145,22 @@ export async function liveLogin(redirectUrl?: string, inviteToken?: null | strin
         redirectUrl,
         scope: 'wl.emails'
     });
+}
+
+export async function signOut(queryClient?: QueryClient) {
+    await endSession();
+
+    await queryClient?.cancelQueries();
+    queryClient?.clear();
+
+    clearAuthenticationSession();
+
+    organization.current = undefined;
+    if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem('organization');
+    }
+
+    await goto(resolve('/(auth)/login'));
 }
 
 export async function slackOAuthLogin(): Promise<string> {

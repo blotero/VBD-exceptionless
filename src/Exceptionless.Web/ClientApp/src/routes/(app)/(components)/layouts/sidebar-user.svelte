@@ -12,10 +12,9 @@
     import * as Sidebar from '$comp/ui/sidebar/index';
     import { useSidebar } from '$comp/ui/sidebar/index';
     import { Skeleton } from '$comp/ui/skeleton';
-    import { logout } from '$features/auth/api.svelte';
+    import { signOut } from '$features/auth/index.svelte';
     import { organization } from '$features/organizations/context.svelte';
     import { apiReferenceHref, documentationHref, githubRepositoryHref, supportIssuesHref } from '$features/shared/help-links';
-    import { useFetchClient } from '@foundatiofx/fetchclient';
     import BadgeCheck from '@lucide/svelte/icons/badge-check';
     import Bell from '@lucide/svelte/icons/bell';
     import BookOpen from '@lucide/svelte/icons/book-open';
@@ -56,7 +55,6 @@
         user
     }: Props = $props();
     const sidebar = useSidebar();
-    const client = useFetchClient();
     const queryClient = useQueryClient();
     const currentOrganizationId = $derived(organizations.find((organizationItem) => organizationItem.id === organization.current)?.id);
     function getUnreadCountLabel(unreadCount: number): string {
@@ -86,8 +84,7 @@
 
     async function onLogout(): Promise<void> {
         onMenuClick();
-        await logout(queryClient, client);
-        await goto(resolve('/(auth)/login'));
+        await signOut(queryClient);
     }
 
     function onMenuClick() {
