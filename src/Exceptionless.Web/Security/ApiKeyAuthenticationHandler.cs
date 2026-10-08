@@ -194,9 +194,9 @@ public class ApiKeyAuthenticationHandler : AuthenticationHandler<ApiKeyAuthentic
         }
 
         Request.HttpContext.Items["ApiKey"] = tokenRecord.Id;
-        if (tokenRecord.IsSuspended)
+        if (tokenRecord.IsDisabled || tokenRecord.IsSuspended)
         {
-            Logger.LogInformation("OAuth token account is suspended for {Path}", Request.Path);
+            Logger.LogInformation("OAuth token is disabled or account is suspended for {Path}", Request.Path);
             return AuthenticateResult.Fail("Token is not valid");
         }
 
