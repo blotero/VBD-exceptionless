@@ -514,6 +514,8 @@ public class OAuthService(OAuthServerOptions options, ICacheClient cacheClient, 
 
         if (isRefreshToken)
             await RevokeOAuthGrantFamilyAsync(token);
+        else
+            await DisableTokenAsync(token);
 
         return true;
     }
