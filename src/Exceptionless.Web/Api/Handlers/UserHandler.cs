@@ -139,7 +139,6 @@ public class UserHandler(
         {
             foreach (var oauthToken in results.Documents)
             {
-                oauthToken.IsDisabled = true;
                 oauthToken.RefreshTokenHash = null;
                 oauthToken.UpdatedUtc = utcNow;
                 await oauthTokenRepository.SaveAsync(oauthToken, o => o.ImmediateConsistency());
