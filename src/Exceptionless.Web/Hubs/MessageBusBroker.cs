@@ -108,15 +108,13 @@ public sealed class MessageBusBroker : IStartupAction
 
                 // Auth token removed = logout. Close sockets immediately without sending;
                 // there is no point delivering a message to a connection we are about to tear down.
-                if (isAuthToken && entityChanged.ChangeType is ChangeType.Removed)
+                string? organizationId = entityChanged.OrganizationId;
+                if (isAuthToken && entityChanged.ChangeType is ChangeType.Removed && organizationId is { Length: > 0 })
                 {
                     _logger.LogTrace("Auth token removed for user {UserId}; closing {ConnectionCount} WebSocket connection(s)", userId, userConnectionIds.Count);
-                    string? organizationId = entityChanged.OrganizationId;
                     foreach (string connectionId in userConnectionIds)
                     {
-                        if (organizationId is { Length: > 0 })
-                            await _connectionMapping.GroupRemoveAsync(organizationId, connectionId);
-
+                        await _connectionMapping.GroupRemoveAsync(organizationId, connectionId);
                         await _connectionMapping.UserIdRemoveAsync(userId, connectionId);
                         await _connectionManager.RemoveWebSocketAsync(connectionId);
                     }
