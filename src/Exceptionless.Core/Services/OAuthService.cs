@@ -532,7 +532,7 @@ public class OAuthService(OAuthServerOptions options, ICacheClient cacheClient, 
         var results = await oauthTokenRepository.GetByGrantIdForUpdateAsync(token.GrantId, o => o.ImmediateConsistency().SearchAfterPaging().PageLimit(OAuthGrantFamilyPageLimit));
         do
         {
-            foreach (var familyToken in results.Documents.Where(t => String.Equals(t.GrantId, token.GrantId, StringComparison.Ordinal) && !t.IsDisabled))
+            foreach (var familyToken in results.Documents.Where(t => String.Equals(t.GrantId, token.GrantId, StringComparison.Ordinal)))
             {
                 disabledAny = true;
                 await DisableTokenAsync(familyToken);
