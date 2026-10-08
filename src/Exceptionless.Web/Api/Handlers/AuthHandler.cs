@@ -161,7 +161,14 @@ public class AuthHandler(
 
         try
         {
-            await tokenRepository.RemoveAsync(id);
+            var token = await tokenRepository.GetByIdAsync(id);
+            if (token is null)
+                return Result.Success();
+
+            if (!String.Equals(token.UserId, currentUser.Id))
+                return Result.Forbidden("Logout not supported");
+
+            await tokenRepository.RemoveAsync(token);
         }
         catch (Exception ex)
         {
