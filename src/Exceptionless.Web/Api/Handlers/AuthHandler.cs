@@ -1,6 +1,5 @@
 using System.Configuration;
 using System.IdentityModel.Tokens.Jwt;
-using System.Security.Claims;
 using System.Text;
 using Exceptionless.Core.Authentication;
 using Exceptionless.Core.Authorization;
@@ -156,7 +155,7 @@ public class AuthHandler(
         if (httpContext.User.IsTokenAuthType())
             return Result.Forbidden("Logout not supported for current user access token");
 
-        string? id = httpContext.User.GetClaimValue(ClaimTypes.NameIdentifier);
+        string? id = httpContext.User.GetLoggedInUsersTokenId();
         if (String.IsNullOrEmpty(id))
             return Result.Forbidden("Logout not supported");
 
