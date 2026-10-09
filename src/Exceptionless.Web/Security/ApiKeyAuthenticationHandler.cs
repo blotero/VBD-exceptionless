@@ -123,6 +123,9 @@ public class ApiKeyAuthenticationHandler : AuthenticationHandler<ApiKeyAuthentic
         }
 
         Request.HttpContext.Items["ApiKey"] = tokenRecord.Id;
+        if (tokenRecord.Type == TokenType.Authentication)
+            return await AuthenticateUserSessionAsync(tokenRecord);
+
         if (tokenRecord.IsDisabled || tokenRecord.IsSuspended)
         {
             if (Request.IsEventPost())
@@ -236,6 +239,27 @@ public class ApiKeyAuthenticationHandler : AuthenticationHandler<ApiKeyAuthentic
         }
 
         return AuthenticateResult.Success(CreateOAuthUserAuthenticationTicket(user, tokenRecord, activeOAuthOrganizationIds));
+    }
+
+    private async Task<AuthenticateResult> AuthenticateUserSessionAsync(Token tokenRecord)
+    {
+        if (String.IsNullOrEmpty(tokenRecord.UserId))
+            return AuthenticateResult.Fail("Token is not valid");
+
+        if (tokenRecord.ExpiresUtc.HasValue && tokenRecord.ExpiresUtc.Value < _timeProvider.GetUtcNow().UtcDateTime)
+        {
+            Logger.LogInformation("Session token for {Path} expired on {TokenExpiresUtc}", Request.Path, tokenRecord.ExpiresUtc.Value);
+            return AuthenticateResult.Fail("Token is not valid");
+        }
+
+        var user = await _userRepository.GetByIdAsync(tokenRecord.UserId, o => o.Cache());
+        if (user is null)
+        {
+            Logger.LogInformation("Could not find user {UserId} for session token on {Path}", tokenRecord.UserId, Request.Path);
+            return AuthenticateResult.Fail("Token is not valid");
+        }
+
+        return AuthenticateResult.Success(CreateUserAuthenticationTicket(user, tokenRecord));
     }
 
     private Task<Token?> GetTokenRecordAsync(string token)
